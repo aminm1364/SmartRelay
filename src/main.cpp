@@ -4,7 +4,7 @@
  *      and of course compatible with aother Arduino platforms.     *
  *                                                                  *
  *      It uses MQTT messaging system, saves the configuration on   *
- *    the built-in ROM, has encryption and dycription library ready *
+ *    the built-in ROM, has encryption and decryption library ready *
  *    and AOT enabled to get the new updates over the air.          *
  *                                                                  *
  *    If you find it useful or interesting, feel free to fork the   *
