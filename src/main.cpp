@@ -26,6 +26,7 @@
 
 // Function prototypes
 void enterConfigurationMode();
+JsonDocument DeserializeJsonDoc(const String &message);
 bool validateEntry(const String &entry, const String &field);
 void saveConfigurationToEEPROM(const String &configJson);
 String readConfigurationFromEEPROM(const bool decrypt);
@@ -56,10 +57,11 @@ byte key[16] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A
 AES128 aes128;                                                                                                   // Create AES object
 char inputString[17];                                                                                            // To store 16 characters + 1 null-terminator
 int inputIndex = 0;
+int mqttConnectionFailedCount = 0;
+int mqttConnectionRetryTimeout = 5; // seconds
 
-// NTP setup
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP);
+NTPClient timeClient(ntpUDP, "europe.pool.ntp.org", 0, 60000);
 
 /*
   entry D0 OR 16 -> board LET - Second (HIGH -> OFF, LOW -> ON) + agains PIN_D0 on the board (HIGH -> ON, LOW -> OFF)
@@ -170,14 +172,17 @@ void setupWiFi()
   Serial.println();
   Serial.print("WiFi connected with ip ");
   Serial.println(WiFi.localIP());
+  Serial.print("WiFi RSSI: ");
+  Serial.println(WiFi.RSSI());
 }
 
 void pingServer()
 {
-  Serial.print("Pinging host ");
+  Serial.print("Pinging host:");
   Serial.println(mqtt_server);
+  delay(1000);
 
-  if (Ping.ping(mqtt_server, 5))
+  if (Ping.ping(mqtt_server, 10))
   {
     Serial.println("Success!!");
   }
@@ -187,16 +192,67 @@ void pingServer()
   }
 }
 
-void RelayStatusOFF()
+void RelayStatusLOW()
 {
   digitalWrite(relayPin, LOW);
-  Serial.println("Relay turned OFF");
+  Serial.println("Relay turned LOW");
 }
 
-void RelayStatusON()
+void RelayStatusHIGH()
 {
   digitalWrite(relayPin, HIGH);
-  Serial.println("Relay turned ON");
+  Serial.println("Relay turned HIGH");
+}
+
+// // Week Days
+// String weekDays[7] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"};
+
+// // Month names
+// String months[12] = {"January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"};
+
+String getFormattedDateTime(NTPClient timeClient)
+{
+  timeClient.update();
+
+  time_t epochTime = timeClient.getEpochTime();
+
+  int currentHour = timeClient.getHours();
+  String currentHourStr = currentHour > 10 ? String(currentHour) : "0" + String(currentHour);
+
+  int currentMinute = timeClient.getMinutes();
+  String currentMinuteStr = currentMinute > 10 ? String(currentMinute) : "0" + String(currentMinute);
+
+  int currentSecond = timeClient.getSeconds();
+  String currentSecondStr = currentSecond > 10 ? String(currentSecond) : "0" + String(currentSecond);
+
+  // String weekDay = weekDays[timeClient.getDay()];
+  // Serial.print("Week Day: ");
+  // Serial.println(weekDay);
+
+  // Get a time structure
+  struct tm *ptm = gmtime((time_t *)&epochTime);
+
+  int monthDay = ptm->tm_mday;
+  String monthDayStr = monthDay > 10 ? String(monthDay) : "0" + String(monthDay);
+
+  int currentMonth = ptm->tm_mon + 1;
+  String currentMonthStr = currentMonth > 10 ? String(currentMonth) : "0" + String(currentMonth);
+
+  // String currentMonthName = months[currentMonth - 1];
+  // Serial.print("Month name: ");
+  // Serial.println(currentMonthName);
+
+  int currentYear = ptm->tm_year + 1900;
+  String currentYearStr = String(currentYear);
+
+  // Print complete date:
+  // String currentDate = String(currentYear) + "-" + String(currentMonth) + "-" + String(monthDay);
+  // Serial.print("Current date: ");
+  // Serial.println(currentDate);
+
+  String timestamp = currentYearStr + "-" + currentMonthStr + "-" + monthDayStr + "T" + currentHourStr + ":" + currentMinuteStr + ":" + currentSecondStr;
+
+  return timestamp;
 }
 
 // Get formatted timestamp
@@ -204,18 +260,26 @@ String getTimestamp()
 {
   timeClient.update();
 
-  return timeClient.getFormattedTime();
+  String formattedTimestamp = getFormattedDateTime(timeClient);
+
+  return String(formattedTimestamp);
 }
 
 // Publish a message to MQTT
-void publishMessage(const char *message)
+void publishMessage(JsonDocument &jsonDoc, const char *message, const char *status)
 {
   String timestamp = getTimestamp();
-  String fullMessage = String(message) + " | Timestamp: " + timestamp;
+  jsonDoc["Timestamp"] = timestamp;
+  jsonDoc["Text"] = message;
+  jsonDoc["Status"] = status;
+  jsonDoc["DirectionType"] = 2; // It's a callback
+
+  String jsonMessage;
+  serializeJson(jsonDoc, jsonMessage);
   if (client.connected())
   {
-    client.publish(mqtt_publish_topic, fullMessage.c_str());
-    Serial.printf("Published: %s\n", fullMessage.c_str());
+    client.publish(mqtt_publish_topic, jsonMessage.c_str());
+    Serial.printf("Published: %s\n", jsonMessage.c_str());
   }
   else
   {
@@ -232,20 +296,43 @@ void callback(char *topic, byte *payload, unsigned int length)
     message += (char)payload[i];
   }
 
-  // Add basic security check (example: check for an authorization token in the message)
-  if (message.startsWith(mqtt_authentication))
-  {                                                                  // Replace with your security logic
-    String command = message.substring(strlen(mqtt_authentication)); // Assuming token length is 15 chars
-    Serial.println(command);
-    if (command == "ON")
+  Serial.print("Received message:");
+  Serial.println(message.c_str());
+
+  JsonDocument jsonMessage = DeserializeJsonDoc(message);
+
+  // Extract values
+  // String _id = jsonMessage["Id"];
+  // String _userId = jsonMessage["UserId"];
+  // String _timestamp = jsonMessage["Timestamp"];
+  int _directionType = jsonMessage["DirectionType"];
+  String _token = jsonMessage["Token"];
+  String _text = jsonMessage["Text"];
+  String _status = jsonMessage["Status"];
+
+  if (_token == mqtt_authentication)
+  {
+    if (_directionType == 1) // It's a message (not a callback)
     {
-      RelayStatusON();
-      publishMessage("Relay is now ON! UFFF!!");
+      if (_text == "HIGH")
+      {
+        RelayStatusHIGH();
+        publishMessage(jsonMessage, "Relay is now HIGH! UFFF!!", "");
+      }
+      else if (_text == "LOW")
+      {
+        RelayStatusLOW();
+        publishMessage(jsonMessage, "Relay is now LOW! UFFF!!", "");
+      }
+      else if (_text == "STATUS")
+      {
+        int _status = digitalRead(relayPin);
+        String statusText = _status == HIGH ? "HIGH" : "LOW";
+        publishMessage(jsonMessage, "", statusText.c_str());
+      }
     }
-    else if (command == "OFF")
+    else if (_directionType == 2) // It's a callback
     {
-      RelayStatusOFF();
-      publishMessage("Relay is now OFF! UFFF!!");
     }
   }
   else
@@ -260,6 +347,8 @@ void connectMQTT()
   while (!client.connected())
   {
     Serial.println("Connecting to MQTT...");
+    Serial.print("WiFi RSSI: ");
+    Serial.println(WiFi.RSSI());
     if (client.connect("ESP8266Client", mqtt_user, mqtt_password))
     {
       Serial.println("Connected to MQTT");
@@ -267,10 +356,24 @@ void connectMQTT()
     }
     else
     {
-      Serial.print("Failed to connect, retrying in 5 seconds. State: ");
+      mqttConnectionFailedCount++;
+      if (mqttConnectionFailedCount <= 5)
+      {
+        mqttConnectionRetryTimeout = 5;
+      }
+      else if (mqttConnectionFailedCount > 5 && mqttConnectionFailedCount <= 10)
+      {
+        mqttConnectionRetryTimeout = 10;
+      }
+      else
+      {
+        mqttConnectionRetryTimeout = 60;
+      }
+      String timestamp = getTimestamp();
+      Serial.print(String(timestamp) + " > Failed to connect for the " + String(mqttConnectionFailedCount) + " time, retrying in " + String(mqttConnectionRetryTimeout) + " seconds. State: ");
       Serial.println(client.state());
       statusheartbeat(false);
-      delay(5000);
+      delay(mqttConnectionRetryTimeout * 1000);
     }
   }
 }
@@ -296,15 +399,23 @@ void checkForUpdates()
   }
 }
 
-void GetSavedConfigurations(const String &config)
+JsonDocument DeserializeJsonDoc(const String &message)
 {
-  StaticJsonDocument<256> jsonDoc;
-  DeserializationError error = deserializeJson(jsonDoc, config);
+  JsonDocument jsonDoc;
+  // Deserialize the JSON document
+  DeserializationError error = deserializeJson(jsonDoc, message);
   if (error)
   {
-    Serial.println("Failed to parse configuration JSON.");
-    return;
+    Serial.print(F("deserializeJson() failed: "));
+    Serial.println(error.f_str());
   }
+
+  return jsonDoc;
+}
+
+void GetSavedConfigurations(const String &config)
+{
+  JsonDocument jsonDoc = DeserializeJsonDoc(config);
 
   // Extract values
   String wifiSSID = jsonDoc["wifiSSID"];
@@ -319,7 +430,7 @@ void GetSavedConfigurations(const String &config)
   String otaUrl = jsonDoc["otaUrl"];
   int relayPinNumber = jsonDoc["relayPinNumber"];
 
-  Serial.println("Loading Configuration:");
+  Serial.println("Loading Configuration...");
   ssid = strdup(wifiSSID.c_str());
   password = strdup(wifiPassword.c_str());
 
@@ -343,15 +454,34 @@ void ConfigurationCheck()
   if (config[0] != 0xFF)
   {
     // Prompt user for reconfiguration
-    Serial.println("Configuration has been found. Do you want to reconfigure? (Press Enter to start) (Waiting time: [5] sec.)");
+    Serial.println("Configuration has been found. Do you want show or to reconfigure? (Press CTRL+S to start reconfiguring. Press Enter to show the current saved configuration.) (Or wait [5] sec. to skip to normal loading.)");
     unsigned long startTime = millis();
-    while (millis() - startTime < 5000)
+    bool stopTime = false;
+    while (millis() - startTime < 5000 && !stopTime)
     {
       if (Serial.available() > 0)
       {
-        if (Serial.read() == '\n')
+        char input = Serial.read(); // Read a character once and store it
+
+        if (input == 19)
         {
           enterConfigurationMode();
+          return;
+        }
+        else if (input == '\n')
+        {
+          stopTime = true;
+          Serial.println("");
+          for (size_t i = 0; i < 512; i++)
+          {
+            Serial.print(config[i]);
+          }
+          Serial.println("Press Enter to continue...");
+          while (Serial.read() != '\n')
+          {
+            delay(500);
+          }
+          ConfigurationCheck();
           return;
         }
       }
@@ -371,12 +501,13 @@ void setup()
   Serial.begin(9600);
   EEPROM.begin(512);          // Initialize EEPROM
   pinMode(statusLED, OUTPUT); // declare onboard LED as output
-  pinMode(relayPin, OUTPUT);  // declare relay as output
-  digitalWrite(relayPin, HIGH);
   digitalWrite(statusLED, LOW);
 
   ConfigurationCheck();
   statusBlinking(1);
+
+  pinMode(relayPin, OUTPUT); // declare relay as output
+  digitalWrite(relayPin, HIGH);
 
   statusBlinking(2);
   setupWiFi();
@@ -491,7 +622,8 @@ void enterConfigurationMode()
   String relayPinNumber = getSerialInput("Enter the Relay PIN number: (number only) ", "integer");
 
   // Create JSON
-  StaticJsonDocument<256> jsonDoc;
+  JsonDocument jsonDoc;
+
   jsonDoc["wifiSSID"] = wifiSSID;
   jsonDoc["wifiPassword"] = wifiPassword;
   jsonDoc["mqttHost"] = mqttHost;
