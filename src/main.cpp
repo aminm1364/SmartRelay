@@ -217,13 +217,13 @@ String getFormattedDateTime(NTPClient timeClient)
   time_t epochTime = timeClient.getEpochTime();
 
   int currentHour = timeClient.getHours();
-  String currentHourStr = currentHour > 10 ? String(currentHour) : "0" + String(currentHour);
+  String currentHourStr = currentHour >= 10 ? String(currentHour) : "0" + String(currentHour);
 
   int currentMinute = timeClient.getMinutes();
-  String currentMinuteStr = currentMinute > 10 ? String(currentMinute) : "0" + String(currentMinute);
+  String currentMinuteStr = currentMinute >= 10 ? String(currentMinute) : "0" + String(currentMinute);
 
   int currentSecond = timeClient.getSeconds();
-  String currentSecondStr = currentSecond > 10 ? String(currentSecond) : "0" + String(currentSecond);
+  String currentSecondStr = currentSecond >= 10 ? String(currentSecond) : "0" + String(currentSecond);
 
   // String weekDay = weekDays[timeClient.getDay()];
   // Serial.print("Week Day: ");
@@ -233,10 +233,10 @@ String getFormattedDateTime(NTPClient timeClient)
   struct tm *ptm = gmtime((time_t *)&epochTime);
 
   int monthDay = ptm->tm_mday;
-  String monthDayStr = monthDay > 10 ? String(monthDay) : "0" + String(monthDay);
+  String monthDayStr = monthDay >= 10 ? String(monthDay) : "0" + String(monthDay);
 
   int currentMonth = ptm->tm_mon + 1;
-  String currentMonthStr = currentMonth > 10 ? String(currentMonth) : "0" + String(currentMonth);
+  String currentMonthStr = currentMonth >= 10 ? String(currentMonth) : "0" + String(currentMonth);
 
   // String currentMonthName = months[currentMonth - 1];
   // Serial.print("Month name: ");
