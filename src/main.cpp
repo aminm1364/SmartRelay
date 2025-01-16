@@ -50,7 +50,9 @@ const char *mqtt_publish_topic = nullptr;
 const char *ota_url = nullptr; //"http://your-github-server-or-other-host.com/firmware.bin";
 
 // Relay pin
-const int statusLED = 16; // D0
+const int statusLED = 16;    // D0
+const int buttonPin = 5;     // D1
+bool lastButtonState = HIGH; // Variable to store last button state
 int relayPin;
 
 byte key[16] = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F}; // 128-bit key
@@ -317,18 +319,18 @@ void callback(char *topic, byte *payload, unsigned int length)
       if (_text == "HIGH")
       {
         RelayStatusHIGH();
-        publishMessage(jsonMessage, "Relay is now HIGH! UFFF!!", "");
+        publishMessage(jsonMessage, "Relay turned HIGH.", "HIGH");
       }
       else if (_text == "LOW")
       {
         RelayStatusLOW();
-        publishMessage(jsonMessage, "Relay is now LOW! UFFF!!", "");
+        publishMessage(jsonMessage, "Relay turned LOW.", "LOW");
       }
       else if (_text == "STATUS")
       {
         int _status = digitalRead(relayPin);
         String statusText = _status == HIGH ? "HIGH" : "LOW";
-        publishMessage(jsonMessage, "", statusText.c_str());
+        publishMessage(jsonMessage, NULL, statusText.c_str());
       }
     }
     else if (_directionType == 2) // It's a callback
@@ -499,8 +501,9 @@ void ConfigurationCheck()
 void setup()
 {
   Serial.begin(9600);
-  EEPROM.begin(512);          // Initialize EEPROM
-  pinMode(statusLED, OUTPUT); // declare onboard LED as output
+  EEPROM.begin(512);                // Initialize EEPROM
+  pinMode(statusLED, OUTPUT);       // declare onboard LED as output
+  pinMode(buttonPin, INPUT_PULLUP); // declare button
   digitalWrite(statusLED, LOW);
 
   ConfigurationCheck();
@@ -520,6 +523,31 @@ void setup()
   statusBlinking(4);
 }
 
+void ButtonControl()
+{
+  // Read the current state of the button
+  bool currentButtonState = digitalRead(buttonPin);
+
+  // Process the button press
+  if (currentButtonState == LOW && lastButtonState != currentButtonState)
+  {
+    JsonDocument jsonDoc;
+    jsonDoc["Id"] = "00000000-0000-0000-0000-000000000000";
+    jsonDoc["DirectionType"] = 1; // It's a message, not a callback
+    jsonDoc["UserId"] = "mqtt-subscription-ESP8266Clientqos0";
+    jsonDoc["IsPrivate"] = 0;
+    jsonDoc["Token"] = "MCU2207|";
+
+    lastButtonState = currentButtonState;
+    publishMessage(jsonDoc, "Button has been pressed", NULL);
+    delay(50);
+  }
+
+  if (currentButtonState == HIGH && lastButtonState == LOW)
+  {
+    lastButtonState = HIGH;
+  }
+}
 void loop()
 {
   if (!client.connected())
@@ -530,7 +558,7 @@ void loop()
 
   static unsigned long lastheartbeatInterval = 0;
   static unsigned long heartbeatInterval = 4000;
-
+  ButtonControl();
   if (millis() - lastheartbeatInterval > heartbeatInterval)
   {
     lastheartbeatInterval = millis();
